@@ -116,6 +116,9 @@ def talker2code2wav(
     return code2wav_inputs
 
 
+_CODEBOOK_SIZE = 2048
+
+
 def _extract_last_frame(pooling_output: dict[str, Any]) -> torch.Tensor | None:
     audio_codes = pooling_output.get("audio_codes")
     if not isinstance(audio_codes, torch.Tensor) or audio_codes.numel() == 0:
@@ -124,8 +127,16 @@ def _extract_last_frame(pooling_output: dict[str, Any]) -> torch.Tensor | None:
         frame = audio_codes[-1]
         if frame.numel() == 0 or not bool(frame.any().item()):
             return None
+        # Filter frames containing out-of-range codec values (e.g.
+        # stop_token_id=2150 exceeds codebook_size=2048).  Without this,
+        # the Code2Wav embedding lookup crashes with a CUDA index error.
+        # This mirrors the valid_mask check in talker2code2wav().
+        if bool((frame >= _CODEBOOK_SIZE).any().item()):
+            return None
         return frame.to(torch.long).reshape(-1)
     if audio_codes.ndim == 1:
+        if bool((audio_codes >= _CODEBOOK_SIZE).any().item()):
+            return None
         return audio_codes.to(torch.long).reshape(-1)
     raise ValueError(f"Invalid audio_codes shape for Qwen3-TTS async_chunk: {tuple(audio_codes.shape)}")
 
