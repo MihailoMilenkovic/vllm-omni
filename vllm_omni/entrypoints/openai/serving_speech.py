@@ -1082,10 +1082,13 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         if request.initial_codec_chunk_frames is not None:
             params["initial_codec_chunk_frames"] = [request.initial_codec_chunk_frames]
 
-        # VoiceDesign requires non_streaming_mode (match offline script behaviour).
-        # CustomVoice and Base rely on the model default (True and False respectively).
-        if params["task_type"][0] == "VoiceDesign":
-            params["non_streaming_mode"] = [True]
+        # Force non_streaming_mode for all task types. In non_streaming_mode,
+        # the full text + tts_eos_embed is packed into the prefill prompt so the
+        # Talker sees all text upfront and reliably emits stop token 2150.
+        # Without this, Base tasks use streaming text mode (drip-fed one token
+        # per decode step) where the model frequently fails to stop, generating
+        # audio far beyond the input text length.
+        params["non_streaming_mode"] = [True]
 
         return params
 
