@@ -367,6 +367,10 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
         # Keep it optional to avoid strict weight-loading failures.
         self.speaker_encoder: Qwen3TTSSpeakerEncoder | None = None
 
+        # Cache ref_code and speaker_embed by speaker_id to avoid
+        # redundant codec encodes + embedding extraction for repeated speakers.
+        self._ref_audio_cache: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+
         # Code predictor uses an isolated vLLM config so its KV cache doesn't
         # pollute the main engine's static_forward_context (shallow-copy shares
         # the dict by reference — must assign a fresh one).
@@ -1350,8 +1354,16 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
                 ref_audio_list = info_dict.get("ref_audio")
                 if not isinstance(ref_audio_list, list) or not ref_audio_list:
                     raise ValueError("Base requires `ref_audio`.")
-                wav_np, sr = self._normalize_ref_audio(ref_audio_list[0])
-                ref_code_t = self._encode_ref_audio_to_code(wav_np, sr).to(device=input_ids.device)
+                # Cache by speaker_id if provided; avoids redundant codec encodes
+                # for repeated speakers in batch inference.
+                _spk_id = _first(info_dict.get("speaker_id"), "")
+                _cached = self._ref_audio_cache.get(_spk_id) if _spk_id else None
+                if _cached is not None:
+                    ref_code_t, _cached_spk = _cached
+                    ref_code_t = ref_code_t.to(device=input_ids.device)
+                else:
+                    wav_np, sr = self._normalize_ref_audio(ref_audio_list[0])
+                    ref_code_t = self._encode_ref_audio_to_code(wav_np, sr).to(device=input_ids.device)
                 ref_code_len = int(ref_code_t.shape[0])
             if isinstance(ref_code_t, torch.Tensor):
                 ref_code_prompt = ref_code_t
@@ -1368,12 +1380,19 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
             elif isinstance(spk, (list, np.ndarray)):
                 # Plain list/array from API (survived msgspec IPC serialization).
                 speaker_embed = torch.tensor(spk, dtype=torch.bfloat16, device=input_ids.device).view(1, 1, -1)
+            elif _cached is not None:
+                _, speaker_embed = _cached
+                speaker_embed = speaker_embed.to(device=input_ids.device).view(1, 1, -1)
             else:
                 ref_audio_list = info_dict.get("ref_audio")
                 if not isinstance(ref_audio_list, list) or not ref_audio_list:
                     raise ValueError("Base requires `ref_audio`.")
                 wav_np, sr = self._normalize_ref_audio(ref_audio_list[0])
                 speaker_embed = self._extract_speaker_embedding(wav_np, sr).view(1, 1, -1)
+                # Cache both ref_code and speaker_embed for this speaker.
+                _spk_id = _first(info_dict.get("speaker_id"), "")
+                if _spk_id and ref_code_t is not None:
+                    self._ref_audio_cache[_spk_id] = (ref_code_t.detach().cpu(), speaker_embed.detach().cpu())
 
             codec_input = torch.cat([codec_input_0, speaker_embed, codec_input_1], dim=1)
 
