@@ -795,6 +795,11 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
                     except Exception:
                         ref_code_len = None
 
+                if ref_code_len is None:
+                    # Check for explicit ref_code_len hint (from payload dedup).
+                    _hint = _first(info.get("ref_code_len"), None)
+                    if isinstance(_hint, (int, float)):
+                        ref_code_len = int(_hint)
                 if ref_code_len is None and estimate_ref_code_len is not None:
                     ref_code_len = estimate_ref_code_len(info.get("ref_audio"))
                 if ref_code_len is None:
