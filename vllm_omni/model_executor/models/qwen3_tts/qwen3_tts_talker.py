@@ -1350,18 +1350,17 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
                 ref_code_t = ref_code_t.to(device=input_ids.device, dtype=torch.long)
                 ref_code_len = int(ref_code_t.shape[0])
             elif in_context_mode:
-                # Compute ref_code from ref_audio if not provided.
-                ref_audio_list = info_dict.get("ref_audio")
-                if not isinstance(ref_audio_list, list) or not ref_audio_list:
-                    raise ValueError("Base requires `ref_audio`.")
-                # Cache by speaker_id if provided; avoids redundant codec encodes
-                # for repeated speakers in batch inference.
+                # Check speaker cache first — allows callers to omit ref_audio
+                # for repeated speakers (payload dedup).
                 _spk_id = _first(info_dict.get("speaker_id"), "")
                 _cached = self._ref_audio_cache.get(_spk_id) if _spk_id else None
                 if _cached is not None:
                     ref_code_t, _cached_spk = _cached
                     ref_code_t = ref_code_t.to(device=input_ids.device)
                 else:
+                    ref_audio_list = info_dict.get("ref_audio")
+                    if not isinstance(ref_audio_list, list) or not ref_audio_list:
+                        raise ValueError("Base requires `ref_audio`.")
                     wav_np, sr = self._normalize_ref_audio(ref_audio_list[0])
                     ref_code_t = self._encode_ref_audio_to_code(wav_np, sr).to(device=input_ids.device)
                 ref_code_len = int(ref_code_t.shape[0])
