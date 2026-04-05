@@ -233,12 +233,19 @@ class Qwen3TTSCode2Wav(nn.Module):
             ctx_frames = left_context_size[i]
             flat = req_ids
             n = flat.numel()
+            logger.warning(
+                "DIAG Code2Wav[%d]: input_ids_len=%d ctx_frames=%d q=%d frames_if_valid=%s",
+                i, n, ctx_frames, q, n // q if q > 0 and n % q == 0 else "N/A",
+            )
             if n == 0 or n % q != 0:
                 if n > 0:
+                    # Log the actual values for debugging shape mismatches
+                    _sample = flat[:min(32, n)].tolist()
+                    _ctx = left_context_size[i]
                     logger.warning(
-                        "Code2Wav input_ids length %d not divisible by num_quantizers %d; skipping malformed request.",
-                        n,
-                        q,
+                        "Code2Wav input_ids length %d not divisible by num_quantizers %d; "
+                        "skipping malformed request. ctx_frames=%d first_values=%s",
+                        n, q, _ctx, _sample,
                     )
                 parsed.append((0, 0))
                 continue

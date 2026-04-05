@@ -40,17 +40,32 @@ def talker2code2wav(
         # audio_codes shape: [num_frames, Q] where Q=num_quantizers (16)
         audio_codes = output.multimodal_output["audio_codes"].to(torch.long)
         token_ids = output.token_ids
-        # token_ids provides an upper bound on the newly generated codec span.
-        # audio_codes may still contain zero-padded / invalid rows, so trim only
-        # after filtering valid frames instead of trying to align EOS indices.
-        seq_len = max(len(token_ids) - 1, 0)
-        # Filter invalid frames: zero-padded (EOS) and frames containing
-        # out-of-range values (e.g. stop_token_id=2150 exceeds codebook_size=2048).
+        # --- DIAGNOSTIC (temporary) ---
+        import sys
+        _raw_shape = tuple(audio_codes.shape)
+        _raw_ndim = audio_codes.ndim
+        _token_ids_len = len(token_ids) if token_ids is not None else -1
+        _mm_keys = sorted(output.multimodal_output.keys()) if output.multimodal_output else []
+        _zero_rows = int((~audio_codes.any(dim=1)).sum()) if _raw_ndim >= 2 else -1
+        _oor_rows = int((audio_codes.max(dim=1).values >= 2048).sum()) if _raw_ndim >= 2 else -1
+        _max_val = int(audio_codes.max().item()) if audio_codes.numel() > 0 else -1
+        _min_val = int(audio_codes.min().item()) if audio_codes.numel() > 0 else -1
+        print(
+            f"DIAG[t2c2w][{i}] raw_shape={_raw_shape} ndim={_raw_ndim} "
+            f"token_ids_len={_token_ids_len} zero_rows={_zero_rows} "
+            f"oor_rows={_oor_rows} max_val={_max_val} min_val={_min_val} "
+            f"mm_keys={_mm_keys}",
+            file=sys.stderr, flush=True,
+        )
+        # --- END DIAGNOSTIC ---
         _CODEBOOK_SIZE = 2048
         valid_mask = audio_codes.any(dim=1) & (audio_codes.max(dim=1).values < _CODEBOOK_SIZE)
+        _valid_count = int(valid_mask.sum())
+        print(
+            f"DIAG[t2c2w][{i}] valid_mask_count={_valid_count} (of {_raw_shape[0] if _raw_ndim >= 1 else 0})",
+            file=sys.stderr, flush=True,
+        )
         audio_codes = audio_codes[valid_mask]
-        if seq_len > 0 and audio_codes.ndim == 2 and int(audio_codes.shape[0]) > seq_len:
-            audio_codes = audio_codes[-seq_len:]
         ref_code = output.multimodal_output.get("ref_code")
         ref_code_len = output.multimodal_output.get("ref_code_len")
         if isinstance(ref_code_len, torch.Tensor):
@@ -92,6 +107,11 @@ def talker2code2wav(
         else:
             ref_code_len = 0
         # Code2Wav expects codebook-major flat: [Q*num_frames]
+        print(
+            f"DIAG[t2c2w][{i}] final_shape={tuple(audio_codes.shape)} "
+            f"ref_code_len={ref_code_len} codec_flat_len={audio_codes.numel()}",
+            file=sys.stderr, flush=True,
+        )
         codec_codes = audio_codes.transpose(0, 1).cpu().reshape(-1).tolist()
         additional_information: dict[str, Any] = {}
         if ref_code_len > 0:
