@@ -39,43 +39,19 @@ def talker2code2wav(
         output = talker_output.outputs[0]
         # audio_codes shape: [num_frames, Q] where Q=num_quantizers (16)
         audio_codes = output.multimodal_output["audio_codes"].to(torch.long)
-        token_ids = output.token_ids
-        # ---- DIAGNOSTIC: compare before/after filter and trim ----
-        _diag_initial_rows = int(audio_codes.shape[0]) if audio_codes.ndim == 2 else 0
-        _diag_initial_any_zero_rows = int((~audio_codes.any(dim=1)).sum()) if audio_codes.ndim == 2 else 0
-        _diag_initial_out_of_range_rows = (
-            int((audio_codes.max(dim=1).values >= 2048).sum()) if audio_codes.ndim == 2 else 0
-        )
-        _diag_token_ids_len = len(token_ids) if token_ids is not None else 0
-        # token_ids provides an upper bound on the newly generated codec span.
-        # audio_codes may still contain zero-padded / invalid rows, so trim only
-        # after filtering valid frames instead of trying to align EOS indices.
-        seq_len = max(len(token_ids) - 1, 0)
-        # Filter invalid frames: zero-padded (EOS) and frames containing
-        # out-of-range values (e.g. stop_token_id=2150 exceeds codebook_size=2048).
-        _CODEBOOK_SIZE = 2048
-        valid_mask = audio_codes.any(dim=1) & (audio_codes.max(dim=1).values < _CODEBOOK_SIZE)
-        audio_codes = audio_codes[valid_mask]
-        _diag_after_filter_rows = int(audio_codes.shape[0]) if audio_codes.ndim == 2 else 0
-        _diag_trim_would_fire = (
-            seq_len > 0
-            and audio_codes.ndim == 2
-            and int(audio_codes.shape[0]) > seq_len
-        )
-        _diag_trim_drops = (
-            int(audio_codes.shape[0]) - seq_len if _diag_trim_would_fire else 0
-        )
-        if seq_len > 0 and audio_codes.ndim == 2 and int(audio_codes.shape[0]) > seq_len:
-            audio_codes = audio_codes[-seq_len:]
-        logger.info(
-            "qwen3_tts_filter_diag: token_ids_len=%d initial_rows=%d "
-            "initial_zero_rows=%d initial_oor_rows=%d after_filter_rows=%d "
-            "seq_len=%d trim_would_fire=%s trim_drops=%d final_rows=%d",
-            _diag_token_ids_len, _diag_initial_rows,
-            _diag_initial_any_zero_rows, _diag_initial_out_of_range_rows,
-            _diag_after_filter_rows, seq_len, _diag_trim_would_fire,
-            _diag_trim_drops, int(audio_codes.shape[0]) if audio_codes.ndim == 2 else 0,
-        )
+        # Truncate at the first EOS frame, matching HF's behavior in
+        # modeling_qwen3_tts.py lines 2283-2290 (truncate at first occurrence
+        # of codec_eos_token_id in codebook 0). In vllm-omni, talker_mtp()
+        # zeroes the entire 16-quantizer row when EOS is sampled (see
+        # qwen3_tts_talker.py lines 1655-1658), so the first all-zero row is
+        # the first EOS. The talker's compute_logits() already masks all
+        # non-codec values except EOS (qwen3_tts_talker.py lines 387-447),
+        # so no other filtering is required.
+        if audio_codes.ndim == 2 and audio_codes.shape[0] > 0:
+            zero_rows = ~audio_codes.any(dim=1)
+            if zero_rows.any():
+                first_eos = int(torch.argmax(zero_rows.int()).item())
+                audio_codes = audio_codes[:first_eos]
         ref_code = output.multimodal_output.get("ref_code")
         ref_code_len = output.multimodal_output.get("ref_code_len")
         if isinstance(ref_code_len, torch.Tensor):
